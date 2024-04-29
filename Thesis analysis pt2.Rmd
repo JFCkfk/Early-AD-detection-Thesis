@@ -1,0 +1,471 @@
+---
+title: "Thesis analysis"
+author: "Junfan Chen"
+date: "2024-02-19"
+output:
+  pdf_document:
+    latex_engine: xelatex
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+getwd()
+setwd("/Users/chenjunfan/Desktop/Thesis dataset")
+
+#Graphic Outputs
+library(ggplot2)
+library(ggfortify)
+library(GGally)
+
+#Graphic Aesthetics
+library(flextable)
+library(kableExtra)
+library(cowplot)
+```
+
+## Data set cleaning
+Data cleaning for the clinical data set
+
+```{r dataset cleaning, message=FALSE, warning=FALSE}
+library(dplyr)
+library(tidyverse)
+
+clin_ad <- read.csv("Clinical_ADE_Sum.csv")
+clin_ad$AD_early[clin_ad$final_dx_cat %in% c(4)] <- 1
+clin_ad$AD_early[clin_ad$final_dx_cat %in% c(1, 7, 8, 11, 13)] <- 0
+clin_ad$AD_early <- as.factor(clin_ad$AD_early)
+clin_ad <- clin_ad %>%
+  mutate_if(is.numeric, as.factor)
+cols <- c("age","declong","decage","height","weight","bmi","boston","mmse")
+clin_ad[cols] <- lapply(clin_ad[cols], as.numeric)
+clin_ade <- clin_ad[-c(1,32)]
+```
+
+## Data splitting & Library loading
+
+Data splitting for machine learning
+
+```{r data splitting & library loading, message=FALSE, warning=FALSE}
+library(glmnet)
+library(gbm)
+library(MASS)
+library(caret)
+library(e1071)
+
+set.seed(123)
+tidx <- createDataPartition(y=clin_ade$AD_early, p=0.70, list = FALSE)
+erl_train <- clin_ade[tidx,]
+erl_test <- clin_ade[-(tidx),]
+```
+
+model building:
+random forest(done), decision tree(done with problem), XGBoost(done), SVM(done), Voting classifier(selections on rf, dt, svm), GaussianNB(done), Ridge Regression(done), Lasso(done)
+LOOCV, 10 fold CV
+
+Random forest model for early_AD
+```{r random forest, message=FALSE, warning=FALSE}
+library(randomForest)
+set.seed(104)
+rf.ade <- randomForest(AD_early ~., data=erl_train, importance=TRUE)
+y.rfe <- predict(rf.ade)
+yhat.rfe <- predict(rf.ade, newdata = erl_test)
+ye.met <- confusionMatrix(y.rfe, erl_train$AD_early, mode="everything")
+yhate.met <-confusionMatrix(yhat.rfe, erl_test$AD_early, mode="everything")
+
+importance(rf.ade)
+varImpPlot(rf.ade)
+
+ # make dataframe from importance() output
+feat_imp_df <- importance(rf.ade) %>% 
+    data.frame() %>% 
+    mutate(feature = row.names(.), cluster=ifelse(MeanDecreaseGini > 2, 1, 0)) 
+# plot dataframe
+  ggplot(feat_imp_df, aes(x = reorder(feature, MeanDecreaseGini), 
+                         y = MeanDecreaseGini, fill=cluster)) +
+    geom_bar(stat='identity') +
+    coord_flip() +
+    theme_classic() +
+    labs(x= "Feature", y= "Importance") + ggtitle("Random Forest Feature Importance Plot (Early AD from Other AD)")
+
+ye.met
+yhate.met
+rfe.mcc.tr <- mcc(y.rfe, erl_train$AD_early)
+rfe.mcc.te <- mcc(yhat.rfe, erl_test$AD_early)
+rfe.mcc.te
+# Calculate probability on testing data set for the respective models
+prob.rfetr <- predict(rf.ade, newdata = erl_train, type="prob")[,2]
+prob.rfe <- predict(rf.ade, newdata = erl_test, type="prob")[,2]
+
+roc.rfetr <- roc(erl_train$AD_early, prob.rfetr, levels= levels(erl_train$AD_early))
+roc.rfe <- roc(erl_test$AD_early, prob.rfe, levels= levels(erl_test$AD_early))
+auc.rfetr <- auc(roc.rfetr)
+auc.rfe <- auc(roc.rfe)
+
+RFe_summary <- data.frame(Dataset=c("RF Train", "RF Test"), 
+                         Accuracy=c(ye.met$overall['Accuracy'], yhate.met$overall['Accuracy']), 
+                          MCC = c(rfe.mcc.tr, rfe.mcc.te),
+                          AUC = c(auc.rfetr, auc.rfe),
+                          F1_Score=c(ye.met$byClass['F1'], yhate.met$byClass['F1']),
+                          Recall=c(ye.met$byClass['Recall'], yhate.met$byClass['Recall']),
+                          Precision=c(ye.met$byClass['Precision'], yhate.met$byClass['Precision']),
+                          Kappa=c(ye.met$overall['Kappa'], yhate.met$overall['Kappa']))
+flextable(RFe_summary)
+```
+
+Decision tree
+```{r decision tree, message=FALSE, warning=FALSE}
+library(rpart)
+library(rpart.plot)
+library(tree)
+
+dtree <- rpart(AD_early ~., data=erl_train)
+rpart.plot(dtree)
+
+printcp(dtree)
+plotcp(dtree)
+
+my_control <- tree.control(nrow(erl_train), minsize = 2, mindev = 0)
+tree.fit <- tree(AD_early ~., data=erl_train)
+
+cv.dia <- cv.tree(tree.fit)
+cv.dia_df <- data.frame(size = cv.dia$size, deviance = cv.dia$dev)
+best_size <- min(cv.dia$size[cv.dia$dev == min(cv.dia$dev)])
+ggplot(cv.dia_df, aes(x = size, y = deviance)) +
+geom_point(size = 3) +
+geom_line() +
+geom_vline(xintercept = best_size, col = "red")
+
+dia.tree <- prune.tree(tree.fit, best = best_size)
+plot(dia.tree)
+text(dia.tree)
+
+pred.tree <- predict(tree.fit, type="class")
+dt.tr_err <- mean(pred.tree != erl_train$AD_early)
+trtre.met <- confusionMatrix(pred.tree, erl_train$AD_early, mode = "everything")
+pred.tree.te <- predict(tree.fit, newdata = erl_test, type = "class")
+dt.te_err <- mean(pred.tree.te != erl_test$AD_early)
+tetre.met <- confusionMatrix(pred.tree.te, erl_test$AD_early, mode="everything")
+
+trtre.met
+tetre.met
+
+dte.mcc.tr <- mcc(pred.tree, erl_train$AD_early)
+dte.mcc.te <- mcc(pred.tree.te, erl_test$AD_early)
+
+prob.dtetr <- predict(tree.fit, newdata = erl_train, type="class")
+prob.dte <- predict(tree.fit, newdata = erl_test, type="class")
+
+roc.dtetr <-  roc(erl_train$AD_early, as.numeric(prob.dtetr))
+roc.dte <- roc(erl_test$AD_early, as.numeric(prob.dte))
+auc.dtetr <- auc(roc.dtetr)
+auc.dte <- auc(roc.dte)
+
+
+DT_summary <- data.frame(Dataset=c("DT Train", "DT Test"), Accuracy=c(trtre.met$overall['Accuracy'], tetre.met$overall['Accuracy']), 
+                          MCC=c(dte.mcc.tr, dte.mcc.te),
+                          AUC=c(auc.dtetr, auc.dte),
+                          F1_Score=c(trtre.met$byClass['F1'], tetre.met$byClass['F1']),
+                          Recall=c(trtre.met$byClass['Recall'], tetre.met$byClass['Recall']),
+                          Precision=c(trtre.met$byClass['Precision'], tetre.met$byClass['Precision']),
+                          Kappa=c(trtre.met$overall['Kappa'], tetre.met$overall['Kappa']))
+flextable(DT_summary)
+```
+
+XGBoost
+```{r XGBoost, message=FALSE, warning=FALSE}
+library(cvms)
+library(caTools)
+library(xgboost)
+library(Ckmeans.1d.dp)
+set.seed(104)
+# Data one-hot encoding
+labels <- erl_train$AD_early
+te_label <- erl_test$AD_early
+new_tr <- model.matrix(~.+0,data = erl_train[,-c(31)]) 
+new_te <- model.matrix(~.+0,data = erl_test[,-c(31)])
+labels <- as.numeric(labels) - 1
+te_label <- as.numeric(te_label) - 1
+
+# Prepare data matrix
+dtr <- xgb.DMatrix(data = as.matrix(new_tr),label = labels) 
+dte <- xgb.DMatrix(data = as.matrix(new_te),label=te_label)
+
+# Parameter setting
+xgb.param <- list(
+  booster = "gbtree", 
+  eta = 0.3,
+  max_depth = 6,
+  gamma = 0,
+  subsample= 0.70,
+  colsample_bytree = 1,
+  objective = "binary:logistic")
+nround <- 100
+cv.nfold <- 10
+
+# Cross validation model
+cv.mod <- xgb.cv(params = xgb.param,
+                 data = dtr,
+                 nrounds= nround,
+                 nfold=cv.nfold,
+                 showsd=T, stratified = T, print.every.n = 100, early.stop.round = 20, 
+                 maximize = F)
+# Best iteration = 37
+
+# Training model
+xgb.tr <- xgb.train(params = xgb.param, data = dtr, nrounds = 37, watchlist = list(val=dte,train=dtr), print.every.n = 100, early.stop.round = 10, maximize = F , eval_metric = "logloss")
+
+# Model Prediction 
+pred1 <- predict(xgb.tr, dtr)
+pred1 <-  ifelse(pred1 > 0.5, 1, 0)
+pred2 <- predict(xgb.tr, dte)
+pred2 <-  ifelse(pred2 > 0.5, 1, 0)
+
+# Confusion matrix
+cmt <- confusionMatrix(as.factor(pred1), as.factor(labels))
+cmte <- confusionMatrix(as.factor(pred2), as.factor(te_label))
+# Confusion matrix results of training and test set
+cmt
+cmte
+
+# Naming the variable & importance matrix
+mat <- xgb.importance(feature_names = colnames(new_tr), model = xgb.tr)
+head(mat, 6)
+
+# Feature importance plot
+ggp <- xgb.ggplot.importance(importance_matrix = mat, rel_to_first = TRUE)
+ggp + ggplot2::ggtitle("XGBoost Feature Importance Plot (Early AD from other AD)") + ggplot2::ylab("Relative Importance")
+
+xgbe.mcc.tr <- mcc(as.factor(pred1), erl_train$AD_early)
+xgbe.mcc.te <- mcc(as.factor(pred2), erl_test$AD_early)
+
+# Probability calculation
+prob.xgbetr <- predict(xgb.tr, dtr)
+prob.xgbe <- predict(xgb.tr, dte)
+roc.xgbetr <- roc(erl_train$AD_early, prob.xgbetr)
+auc.xgbetr <- auc(roc.xgbetr)
+roc.xgbe <- roc(erl_test$AD_early, prob.xgbe)
+auc.xgbe <- auc(roc.xgbe)
+
+xgb_summary <- data.frame(Dataset=c("XGB Train", "XGB Test"), 
+                         Accuracy=c(cmt$overall['Accuracy'], cmte$overall['Accuracy']), 
+                          MCC=c(xgbe.mcc.tr, xgbe.mcc.te),
+                          AUC=c(auc.xgbetr, auc.xgbe),
+                          F1_Score=c(cmt$byClass['F1'], cmte$byClass['F1']),
+                          Recall=c(cmt$byClass['Recall'], cmte$byClass['Recall']),
+                          Precision=c(cmt$byClass['Precision'], cmte$byClass['Precision']),
+                          Kappa=c(cmt$overall['Kappa'], cmte$overall['Kappa']))
+flextable(xgb_summary)
+```
+
+
+SVM
+```{r SVM, message=FALSE, warning=FALSE}
+set.seed(104)
+ad_class = svm(formula = AD_early ~.,
+               data=erl_train,
+               type='C-classification',
+               kernel='linear', cost=100, gamma=1, probability=T)
+
+y_predsv.t = predict(ad_class, newdata = erl_train[-31])
+y_predsv = predict(ad_class, newdata = erl_test[-31])
+confum <- confusionMatrix(y_predsv.t, erl_train$AD_early,mode = "everything")
+confumte <- confusionMatrix(y_predsv, erl_test$AD_early, mode="everything")
+
+confum
+confumte
+
+svme.mcc.tr <- mcc(y_predsv.t, erl_train$AD_early)
+svme.mcc.te <- mcc(y_predsv, erl_test$AD_early)
+
+prob.svmetr <- predict(ad_class, newdata = erl_train[-31], probability = T)
+prob.svme <- predict(ad_class, newdata = erl_test[-31], probability = T)
+roc.svmetr <- roc(erl_train$AD_early, as.numeric(prob.svmetr))
+auc.svmetr <- auc(roc.svmetr)
+roc.svme <- roc(erl_test$AD_early, as.numeric(prob.svme))
+auc.svme <- auc(roc.svme)
+
+svm_summary <- data.frame(Dataset=c("SVM Train", "SVM Test"), 
+                         Accuracy=c(confum$overall['Accuracy'], confumte$overall['Accuracy']), 
+                          MCC=c(svme.mcc.tr, svme.mcc.te),
+                          AUC=c(auc.svmetr, auc.svme),
+                          F1_Score=c(confum$byClass['F1'], confumte$byClass['F1']),
+                          Recall=c(confum$byClass['Recall'], confumte$byClass['Recall']),
+                          Precision=c(confum$byClass['Precision'], confumte$byClass['Precision']),
+                          Kappa=c(confum$overall['Kappa'], confumte$overall['Kappa']))
+flextable(svm_summary)
+```
+
+Naïve Bayes model
+```{r Naive Bayes, message=FALSE, warning=FALSE}
+set.seed(104)
+nbclass_cl <- naiveBayes(AD_early ~., data = erl_train)
+ 
+# Predicting on test data
+y_prednb.t <- predict(nbclass_cl, newdata = erl_train)
+y_prednb <- predict(nbclass_cl, newdata= erl_test)
+ 
+# Confusion Matrix
+cmtrnb <- confusionMatrix(y_prednb.t, erl_train$AD_early, mode="everything")
+cmtenb <- confusionMatrix(y_prednb, erl_test$AD_early, mode="everything")
+cmtrnb
+cmtenb
+
+Grid=data.frame(usekernel=T, laplace=0, adjust=1)
+mdl1 = train(AD_early~., data=erl_test, method="naive_bayes",
+            trControl=trainControl(method = "cv"),
+            tuneGrid=Grid)
+nbvar1 <- varImp(mdl1)
+
+ggplot(nbvar1) + ggtitle("Naïve Bayes Variable Importance Plot (Early AD from other AD)")
+
+# Reporting statistics
+nbe.mcc.tr <- mcc(y_prednb.t, erl_train$AD_early)
+nbe.mcc.te <- mcc(y_prednb, erl_test$AD_early)
+
+prob.nbetr <- predict(nbclass_cl, erl_train, type = "raw")
+prob.nbe <- predict(nbclass_cl, erl_test, type="raw")
+roc.nbetr <- roc(ifelse(erl_train$AD_early=="1",1,0), prob.nbetr[,1])
+auc.nbetr <- auc(roc.nbetr)
+roc.nbe <- roc(ifelse(erl_test$AD_early=="1", 1,0), prob.nbe[,1])
+auc.nbe <- auc(roc.nbe)
+
+
+nb_summary <- data.frame(Dataset=c("NB Train", "NB Test"), 
+                         Accuracy=c(cmtrnb$overall['Accuracy'], cmtenb$overall['Accuracy']), 
+                          MCC=c(nbe.mcc.tr, nbe.mcc.te),
+                          AUC=c(auc.nbetr, auc.nbe),
+                          F1_Score=c(cmtrnb$byClass['F1'], cmtenb$byClass['F1']),
+                          Recall=c(cmtrnb$byClass['Recall'], cmtenb$byClass['Recall']),
+                          Precision=c(cmtrnb$byClass['Precision'], cmtenb$byClass['Precision']),
+                          Kappa=c(cmtrnb$overall['Kappa'], cmtenb$overall['Kappa']))
+flextable(nb_summary)
+```
+
+Ridge regression with 10 fold cv
+```{r Ridge regression, message=FALSE, warning=FALSE}
+library(glmnet)
+set.seed(104)
+rid_tr <- erl_train
+rid_tr[,-31] <- lapply(rid_tr[,-31], as.numeric) %>% as.matrix()
+rid_te <- erl_test
+rid_te[,-31] <- lapply(rid_te[,-31], as.numeric) %>% as.matrix()
+
+# Defining response variable & datamatrix defining
+x_tr <- as.matrix(rid_tr[, -31])
+y_tr <- as.factor(rid_tr[, 31, drop = T])
+x_te <- as.matrix(rid_te[, -31])
+y_te <- as.factor(rid_te[, 31, drop = T])
+
+# Ridge model building
+set.seed(12)
+cv.fit.ridge <- cv.glmnet(x_tr, y_tr, family="binomial", alpha=0,type="class", nfolds=10)
+coef(cv.fit.ridge, s="lambda.min")
+
+tr_pred <- predict(cv.fit.ridge, newx = x_tr, s="lambda.min",type="class")
+te_pred <- predict(cv.fit.ridge, newx = x_te, s="lambda.min",type="class")
+
+cfmr <- table(tr_pred, rid_tr$AD_early)
+cfmrt <- table(te_pred, rid_te$AD_early)
+rdcfm <- confusionMatrix(cfmr, mode="everything")
+rdcfmt <- confusionMatrix(cfmrt,mode="everything")
+
+rid.mcc.tr <- mcc(as.factor(tr_pred), erl_train$AD_early)
+rid.mcc.te <- mcc(as.factor(te_pred), erl_test$AD_early)
+
+prob.ridtr <- predict(cv.fit.ridge, newx = x_tr, s="lambda.min", type="response")
+prob.rid <- predict(cv.fit.ridge, newx = x_te, s="lambda.min", type="response")
+roc.ridtr <- roc(ifelse(erl_train$AD_early=="1", 1,0), prob.ridtr)
+auc.ridtr <- auc(roc.ridtr)
+roc.rid <- roc(ifelse(erl_test$AD_early=="1", 1,0), prob.rid)
+auc.rid <- auc(roc.rid)
+
+rd_summary <- data.frame(Dataset=c("Rid Train", "Rid Test"), 
+                         Accuracy=c(rdcfm$overall['Accuracy'], rdcfmt$overall['Accuracy']), 
+                          MCC=c(rid.mcc.tr, rid.mcc.te),
+                          AUC=c(auc.ridtr, auc.rid),
+                          F1_Score=c(rdcfm$byClass['F1'], rdcfmt$byClass['F1']),
+                          Recall=c(rdcfm$byClass['Recall'], rdcfmt$byClass['Recall']),
+                          Precision=c(rdcfm$byClass['Precision'], rdcfmt$byClass['Precision']),
+                          Kappa=c(rdcfm$overall['Kappa'], rdcfmt$overall['Kappa']))
+flextable(rd_summary)
+```
+
+Lasso with 10 fold cv
+```{r lasso, message=FALSE, warning=FALSE}
+set.seed(104)
+std_fit <- preProcess(x_tr, method = c("center", "scale"))
+x_tr_std <- predict(std_fit, x_tr)
+std_te.fit <- preProcess(x_te, method = c("center", "scale"))
+x_te_std <- predict(std_te.fit, x_te)
+
+cv.fit.lasso <- cv.glmnet(x_tr_std, y_tr, family="binomial", alpha=1,type="class", nfolds=10)
+plot(cv.fit.lasso)
+coef(cv.fit.lasso, s="lambda.min")
+summary(cv.fit.lasso)
+
+opt_lambda <- cv.fit.lasso$lambda.min
+opt_lambda
+
+tr_predl <- predict(cv.fit.lasso, newx = x_tr_std, s="lambda.min",type="class")
+te_predl <- predict(cv.fit.lasso, newx = x_te_std, s="lambda.min",type="class")
+lpred_labls <- factor(ifelse(tr_predl == 1, "AD_early", "Nmrl_AD"))
+lpred.te_labls <- factor(ifelse(te_predl == 1, "AD_early", "Nmrl_AD"))
+
+cfml <- table(tr_predl, rid_tr$AD_early)
+cfmlt <- table(te_predl, rid_te$AD_early)
+lscfm <- confusionMatrix(cfml, mode="everything")
+lscfmt <- confusionMatrix(cfmlt,mode="everything")
+
+las.mcc.tr <- mcc(as.factor(tr_predl), erl_train$AD_early)
+las.mcc.te <- mcc(as.factor(te_predl), erl_test$AD_early)
+
+prob.lstr <- predict(cv.fit.lasso, newx = x_tr_std, s="lambda.min", type="response")
+prob.ls <- predict(cv.fit.lasso, newx = x_te_std, s="lambda.min", type="response")
+roc.lstr <- roc(ifelse(erl_train$AD_early=="1",1,0), prob.lstr)
+auc.lstr <- auc(roc.lstr)
+roc.ls <- roc(ifelse(erl_test$AD_early=="1",1,0), prob.ls)
+auc.ls <- auc(roc.ls)
+
+ls_summary <- data.frame(Dataset=c("LS Train", "LS Test"), 
+                         Accuracy=c(lscfm$overall['Accuracy'], lscfmt$overall['Accuracy']), 
+                          MCC=c(las.mcc.tr, las.mcc.te),
+                          AUC=c(auc.lstr, auc.ls),
+                          F1_Score=c(lscfm$byClass['F1'], lscfmt$byClass['F1']),
+                          Recall=c(lscfm$byClass['Recall'], lscfmt$byClass['Recall']),
+                          Precision=c(lscfm$byClass['Precision'], lscfmt$byClass['Precision']),
+                          Kappa=c(lscfm$overall['Kappa'], lscfmt$overall['Kappa']))
+flextable(ls_summary)
+```
+
+```{r model summary, message=FALSE, warning=FALSE}
+#Train model summary
+Mod.summary <- rbind(RFe_summary, DT_summary, xgb_summary, svm_summary, nb_summary, rd_summary, ls_summary)
+flextable(Mod.summary)
+
+Mod.TR.summary <- Mod.summary %>%
+  filter(Dataset %in% c("RF Train", "DT Train", "XGB Train","SVM Train","NB Train","Rid Train","LS Train"))
+
+Mod.TE.summary <- Mod.summary %>%
+  filter(Dataset %in% c("RF Test", "DT Test", "XGB Test","SVM Test","NB Test","Rid Test","LS Test"))
+
+flextable(Mod.TR.summary)
+flextable(Mod.TE.summary)
+```
+
+
+```{r roc & auc, message=FALSE, warning=FALSE}
+rocobjs1 <- list(RdmForest =roc.rfetr, DeciTree=roc.dttr, XGBoost= roc.xgbtr, SVM = roc.svmtr, NaïvB = roc.nbtr, Ridge=roc.ridtr, Lasso=roc.lstr)
+Methods_auc <- paste(c("RdmForest","DeciTree","XGBoost","SVM","NaïvB","Ridge","Lasso"),
+"AUC = ", round(c(auc.rftr, auc.dttr, auc.xgbtr, auc.svmtr, auc.nbtr, auc.ridtr, auc.lstr),4))
+ggroc(rocobjs1, linetype="solid", legacy.axes=TRUE, size = 1, alpha = 0.5) +
+scale_color_discrete(labels = Methods_auc) +
+  labs(x="1-Specificity", y="Sensitivity", main="AUC-ROC Curve on Training set",linetype="ML AUCs") + ggtitle("AUC-ROC Curve on Training set (AD/other ADs)") + theme_classic()
+
+
+rocobjs <- list(RdmForest =roc.rfe, DeciTree=roc.dte, XGBoost= roc.xgbe, SVM = roc.svme, NaïvB = roc.nbe, Ridge=roc.rid, Lasso=roc.ls)
+Methods_auc <- paste(c("RdmForest","DeciTree","XGBoost","SVM","NaïvB","Ridge","Lasso"),
+"AUC = ", round(c(auc.rfe, auc.dte, auc.xgbe, auc.svme, auc.nbe, auc.rid, auc.ls),4))
+ggroc(rocobjs, linetype="solid", legacy.axes=TRUE, size = 1, alpha = 0.5) +
+scale_color_discrete(labels = Methods_auc) +
+  labs(x="1-Specificity", y="Sensitivity", linetype="ML AUCs") + ggtitle("AUC-ROC Curve on Test set (AD/other ADs)") + theme_classic()
+```

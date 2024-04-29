@@ -1,0 +1,701 @@
+---
+title: "Thesis analysis"
+author: "Junfan Chen"
+date: "2024-02-19"
+output:
+  pdf_document:
+    latex_engine: xelatex
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+getwd()
+setwd("/Users/chenjunfan/Desktop/Thesis dataset")
+```
+
+## Data set cleaning
+Data cleaning for the clinical data set
+```{r data loading and cleaning for neuropsych and cdr, message=FALSE, warning=FALSE}
+library(dplyr)
+library(tidyverse)
+
+clin <- read.csv("OASIS4_data_clinical.csv")
+neu <- read.csv("OASIS4_data_Neuropsychometric.csv")
+csf <- read.csv("OASIS4_data_CSF.csv")
+cdr <- read.csv("OASIS4_data_CDR.csv")
+
+clin <- clin[,-2]
+neu <- neu[,-2]
+cdr <- cdr[,-2]
+
+miss <- c('M','m','C','c','','NA')
+colums <- c('verb_fleunc','boston','mmse','traila_sec','trailb_sec', 'logimem')
+neu_sub <-neu[which(neu$visit_days==3000),]
+cdr_sub <- cdr[which(cdr$visit_days==3000),]
+neu_sub1 <- neu_sub[,c(1,3:5,8,9:10,13,26)]
+neu_sub1 <- neu_sub[,-1]
+neu_sub_edt <- data.frame(sapply(neu_sub1, 
+                      function(x) replace(x, x %in% miss, 0)))
+neu_sub_edt <- neu_sub_edt %>% mutate_if(is.character, as.numeric)
+neu_sub_edt$short_blessed <- sapply(neu_sub_edt$short_blessed, 
+                      function(x) replace(x, x %in% miss, NA))
+sb <- round(mean(neu_sub_edt$short_blessed, na.rm=T))
+neu_sub_edt$short_blessed[is.na(neu_sub_edt$short_blessed)] <- 8
+neu_sub_edt$traila_sec[neu_sub_edt$traila_sec == 0] <- 90
+neu_sub_edt$trailb_sec[neu_sub_edt$trailb_sec == 0] <- 280
+neu_sub_edt$mmse[neu_sub_edt$mmse == '14/24'] <- 14
+neu_sub_edt$gds_total <- sapply(neu_sub_edt$gds_total, 
+                      function(x) replace(x, x %in% miss, NA))
+neu_sub_edt$gds_total[is.na(neu_sub_edt$gds_total)] <- 99
+
+neu_sub_edt <- neu_sub_edt %>%
+  mutate(verb_flu=ifelse(verb_fleunc > 17, 1, 0),
+         short_bls=case_when(
+           short_blessed <= 4 ~ 0,
+           short_blessed >= 5 & short_blessed <= 9 ~ 1,
+           short_blessed >= 10 ~2),
+         tmta=case_when(
+           traila_sec < 51 ~ 0,
+           traila_sec >= 51 & traila_sec <= 79 ~ 1,
+           traila_sec > 79 ~ 2),
+         tmtb=case_when(
+           trailb_sec < 128 ~ 0,
+           trailb_sec >= 128 & traila_sec <= 273 ~ 1,
+           traila_sec > 273 ~ 2),
+         gds=case_when(
+           gds_total < 3 ~ 0,
+           gds_total >= 3 & gds_total <= 6 ~ 1,
+           gds_total > 6 & gds_total != 99 ~ 2,
+           gds_total == 99 ~ 3)) %>%
+  as.data.frame()
+oasis_id <- neu_sub$oasis_id
+neu_sub_edt$oasis_id <- oasis_id
+neu_sub2 <- neu_sub_edt[,c(31, 1:4,31,26:30)]
+cdr_sub1 <- cdr_sub[,c(1,10)]
+write_csv(neu_sub_edt, "NeuPsych_cat.csv")
+```
+
+Merging with the neuropsych tests
+```{r dataset cleaning and recoding, message=FALSE, warning=FALSE}
+clin_tot <- merge(clin,neu_sub2,by=1,all=TRUE)
+clin_tot <- merge(clin_tot, cdr_sub1, by=1, all=TRUE)
+clin_tot$cdr[is.na(clin_tot$cdr)] <- 0.5
+clin_tot <- na.omit(clin_tot)
+clin_tot<- clin_tot[,-7]
+clin_tot$sex[clin_tot$sex == 2] <- 0
+clin_tot$race[clin_tot$race == 50] <- 0
+clin_tot$marriage[clin_tot$marriage == 5] <- 4
+clin_tot$smoke[clin_tot$smoke == 3] <- 0
+
+clin_tot$AD_cat[clin_tot$final_dx_categorized %in% c(1, 4, 7, 8, 11, 13)] <- 1
+clin_tot$AD_cat[clin_tot$final_dx_categorized %in% c(0, 2, 3, 5, 6, 9, 10, 12,14)] <- 0
+
+clin_tot <- clin_tot %>%
+  mutate(firstvisit=as.factor(demographics_firstvisit), sex=as.factor(sex), edu=as.factor(edu),race=as.factor(race), smoke=as.factor(smoke), marriage=as.factor(marriage), hrttk=as.factor(health_history1), atrfi=as.factor(health_history2), ang_st=as.factor(health_history3), cardby=as.factor(health_history4), pace=as.factor(health_history5), chf=as.factor(health_history6), crdd=as.factor(health_history7), cedd=as.factor(health_history10), pks=as.factor(health_history11), strk=as.factor(health_history12), final_dx_cat=as.factor(final_dx_categorized), verb=as.factor(verb_flu), short=as.factor(short_bls), tmta=as.factor(tmta), tmtb=as.factor(tmtb), gds=as.factor(gds), cdr=as.factor(cdr), boston=as.numeric(boston),mmse=as.numeric(mmse), AD_cat=as.factor(AD_cat))
+clin_tot1 <- clin_tot[, c(1,38,3:13, 39:48, 50, 28:29, 32:36, 49, 37)]
+write_csv(clin_tot1, "Clinical_Sum.csv")
+clin_tot2 <- clin_tot1[clin_tot1$AD_cat==1,]
+clin_tot2 <- clin_tot2[-c(33)]
+write_csv(clin_tot2, "Clinical_ADE_Sum.csv")
+```
+
+## Data splitting & Library loading
+
+Data splitting for machine learning
+
+```{r data splitting & library loading, message=FALSE, warning=FALSE}
+library(pROC)
+library(glmnet)
+library(MASS)
+library(mltools)
+library(MLmetrics)
+library(caret)
+library(e1071)
+
+#Graphic Outputs
+library(ggplot2)
+library(ggfortify)
+library(GGally)
+
+#Graphic Aesthetics
+library(flextable)
+library(kableExtra)
+library(cowplot)
+
+clin_ml <- clin_tot1[,c(-1,-32)]
+set.seed(46)
+tidx <- createDataPartition(y=clin_ml$AD_cat, p=0.70, list = FALSE)
+ad_train <- clin_ml[tidx,]
+ad_test <- clin_ml[-(tidx),]
+```
+
+model building:
+random forest(done), decision tree(done with problem), XGBoost(done), SVM(done), Voting classifier(selections on rf, dt, svm), GaussianNB(done), Ridge Regression(done), Lasso(done), 10 fold CV applied 
+
+Random forest model
+```{r random forest, message=FALSE, warning=FALSE}
+library(randomForest)
+set.seed(12)
+rf.ad <- randomForest(AD_cat ~., data=ad_train, importance=TRUE)
+y.rf <- predict(rf.ad)
+yhat.rf <- predict(rf.ad, newdata = ad_test)
+y.rf.err <- mean(y.rf != ad_train[,"AD_cat"])
+yhat.rf.err <- mean(yhat.rf != ad_test[,"AD_cat"])
+y.met <- confusionMatrix(y.rf, ad_train$AD_cat)
+yhat.met <-confusionMatrix(yhat.rf, ad_test$AD_cat)
+
+result <- rfcv(ad_train, ad_train$AD_cat, cv.fold=10)
+with(result, plot(n.var, error.cv, log="x", type="o", lwd=2))
+
+importance(rf.ad)
+varImpPlot(rf.ad)
+
+adtrtabs <- table(y.rf, ad_train$AD_cat)
+adtetabs <- table(yhat.rf, ad_test$AD_cat)
+
+yhat.met
+rf.F1.tr <- F1_Score(y.rf, ad_train$AD_cat)
+rf.F1.te <- F1_Score(yhat.rf, ad_test$AD_cat)
+
+rf.recall.tr <- Recall(y.rf, ad_train$AD_cat)
+rf.recall.te <- Recall(yhat.rf, ad_test$AD_cat)
+
+rf.precision.tr <- Precision(y.rf, ad_train$AD_cat)
+rf.precision.te <- Precision(yhat.rf, ad_test$AD_cat)
+
+
+RF_summary <- data.frame(Dataset=c("RF Train", "RF Test"), 
+                         Accuracy=c(y.met$overall['Accuracy'], yhat.met$overall['Accuracy']), 
+                          Error=c(y.rf.err, yhat.rf.err),
+                          F1_Score=c(rf.F1.tr, rf.F1.te),
+                          Recall=c(rf.recall.tr, rf.recall.te),
+                          Precision=c(rf.precision.tr,rf.precision.te),
+                          Sensitivity=c(Sens.trf, Sens.tef),
+                          Specificity=c(Spec.trf, Spec.tef))
+flextable(RF_summary)
+```
+
+Decision tree
+```{r decision tree, message=FALSE, warning=FALSE}
+library(rpart)
+library(rpart.plot)
+library(tree)
+
+set.seed(12)
+dtree <- rpart(AD_cat ~., data=ad_train)
+rpart.plot(dtree)
+
+printcp(dtree)
+plotcp(dtree)
+
+my_control <- tree.control(nrow(ad_train), minsize = 2, mindev = 0)
+tree.fit <- tree(AD_cat ~., data=ad_train)
+
+cv.dia <- cv.tree(tree.fit)
+cv.dia_df <- data.frame(size = cv.dia$size, deviance = cv.dia$dev)
+best_size <- min(cv.dia$size[cv.dia$dev == min(cv.dia$dev)])
+ggplot(cv.dia_df, aes(x = size, y = deviance)) +
+geom_point(size = 3) +
+geom_line() +
+geom_vline(xintercept = best_size, col = "red")
+
+dia.tree <- prune.tree(tree.fit, best = best_size)
+plot(dia.tree)
+text(dia.tree)
+
+pred.tree <- predict(tree.fit, type="class")
+dt.tr_err <- mean(pred.tree != ad_train$AD_cat)
+trtre.met <-confusionMatrix(pred.tree, ad_train$AD_cat, mode = "everything")
+pred.tree.te <- predict(tree.fit, newdata = ad_test, type = "class")
+dt.te_err <- mean(pred.tree.te != ad_test$AD_cat)
+tetre.met <- confusionMatrix(pred.tree.te, ad_test$AD_cat, mode="everything")
+
+trtre.met
+tetre.met
+
+adtrtabs <- table(pred.tree, ad_train$AD_cat)
+adtetabs <- table(pred.tree.te, ad_test$AD_cat)
+
+dt.F1.tr <- F1_Score(pred.tree, ad_train$AD_cat)
+dt.F1.te <- F1_Score(pred.tree.te, ad_test$AD_cat)
+
+dt.recall.tr <- Recall(pred.tree, ad_train$AD_cat)
+dt.recall.te <- Recall(pred.tree.te, ad_test$AD_cat)
+
+dt.precision.tr <- Precision(pred.tree, ad_train$AD_cat)
+dt.precision.te <- Precision(pred.tree.te, ad_test$AD_cat)
+
+Sens.trd <- sensitivity(adtrtabs, "1")
+Spec.trd <- specificity(adtrtabs, c("0","2"))
+
+Sens.ted <- sensitivity(adtetabs, "1")
+Spec.ted <- sensitivity(adtetabs, c("0","2"))
+
+DT_summary <- data.frame(Dataset=c("DT Train", "DT Test"), Accuracy=c(trtre.met$overall['Accuracy'], tetre.met$overall['Accuracy']), 
+                          Error=c(dt.tr_err, dt.te_err),
+                          F1_Score=c(dt.F1.tr, dt.F1.te),
+                          Recall=c(dt.recall.tr, dt.recall.te),
+                          Precision=c(dt.precision.tr, dt.precision.te),
+                          Sensitivity=c(Sens.trd, Sens.ted),
+                          Specificity=c(Spec.ted, Sens.ted))
+flextable(DT_summary)
+```
+
+XGBoost
+```{r XGBoost, message=FALSE, warning=FALSE}
+library(cvms)
+library(caTools)
+library(xgboost)
+library(Ckmeans.1d.dp)
+
+set.seed(46)
+clin.xge <- clin_ml %>% mutate_if(is.factor,as.integer)
+trdx <- createDataPartition(y=clin.xge$AD_cat, p=0.70, list = FALSE)
+
+# Data setting
+dt_var <- clin.xge[-31]
+dt_labl <- clin.xge[,"AD_cat"]
+dt_mtx <- xgb.DMatrix(data=as.matrix(clin.xge), label=dt_labl)
+
+# Splitting of training data & testing data
+ad_tr <- as.matrix(dt_var[trdx,])
+tr_labl <- (dt_labl[trdx])-1
+tr_mtx <- xgb.DMatrix(data=ad_tr, label=tr_labl)
+
+ad_te <- as.matrix(dt_var[-(trdx),])
+te_labl <- (dt_labl[-(trdx)])-1
+te_mtx <- xgb.DMatrix(data=ad_te, label=te_labl)
+
+# k-folds Cross-validation parameters
+no.cls <- length(unique(clin.xge$AD_cat))
+xgb.param <- list(
+  booster = "gbtree", 
+  eta = 0.3,
+  max_depth = 6,
+  gamma = 0,
+  subsample= 0.70,
+  colsample_bytree = 1,
+  objective = "multi:softprob", 
+  num_class = no.cls)
+nround <- 1000
+cv.nfold <- 10
+
+# Cross validation model
+cv.mod <- xgb.cv(params = xgb.param,
+                 data = tr_mtx,
+                 nrounds=nround,
+                 nfold=cv.nfold,
+                 verbose = FALSE, eval_metric = 'mlogloss', prediction = T)
+cm.pred <- data.frame(cv.mod$pred) %>%
+  mutate(max_prob = max.col(., ties.method = "last"),
+         label = tr_labl + 1)
+head(cm.pred, 5)
+
+# Confusion matrix of training prediction
+cmxgb <- confusionMatrix(factor(cm.pred$max_prob), factor(cm.pred$label), mode="everything")
+cmxgb
+
+# Full model training and test error assessment
+bst.mod <- xgb.train(params = xgb.param, eval_metric = 'mlogloss', data=tr_mtx, nrounds=nround)
+# Testing set prediction
+te.pred <- predict(bst.mod, newdata = te_mtx)
+te.predict <- matrix(te.pred, nrow = no.cls,
+                          ncol=length(te.pred)/no.cls) %>%
+  t() %>%
+  data.frame() %>%
+  mutate(label = te_labl + 1,
+         max_prob = max.col(., "last"))
+# confusion matrix of test set
+cmxgbt <- confusionMatrix(factor(te.predict$max_prob),
+                factor(te.predict$label),
+                mode = "everything")
+cmxgbt
+
+# Naming the variable & importance matrix
+names <- colnames(clin.xge[,-31])
+imp.mtx = xgb.importance(feature_names = names, model=bst.mod)
+head(imp.mtx, 6)
+
+# Feature importance plot
+gg <- xgb.ggplot.importance(imp.mtx, rel_to_first = TRUE)
+gg + ggplot2::ggtitle("XGBoost Feature Importance Plot") + ggplot2::ylab("Relative Importance")
+
+adtrtabs <- table(factor(cm.pred$max_prob), factor(cm.pred$label))
+adtetabs <- table(factor(te.predict$max_prob),factor(te.predict$label))
+
+# Function to compute classification error
+class_error <- function(conf_mat) {
+  conf_mat = as.matrix(conf_mat)
+  error = 1 - sum(diag(conf_mat)) / sum(conf_mat)
+  return (error)
+}
+
+y.xgb.err <- class_error(cmxgb)
+yhat.xgb.err <- class_error(cmxgbt)
+
+xgb.F1.tr <- F1_Score(factor(cm.pred$max_prob), factor(cm.pred$label))
+xgb.F1.te <- F1_Score(factor(te.predict$max_prob),factor(te.predict$label))
+
+xgb.recall.tr <- Recall(factor(cm.pred$max_prob), factor(cm.pred$label))
+xgb.recall.te <- Recall(factor(te.predict$max_prob),factor(te.predict$label))
+
+xgb.precision.tr <- Precision(factor(cm.pred$max_prob), factor(cm.pred$label))
+xgb.precision.te <- Precision(factor(te.predict$max_prob),factor(te.predict$label))
+
+Sens.trx <- sensitivity(adtrtabs, "1")
+Spec.trx <- specificity(adtrtabs, c("0","2"))
+
+Sens.tex <- sensitivity(adtetabs, "1")
+Spec.tex <- sensitivity(adtetabs, c("0","2"))
+
+xgb_summary <- data.frame(Dataset=c("XGB Train", "XGB Test"), 
+                         Accuracy=c(cmxgb$overall['Accuracy'], cmxgbt$overall['Accuracy']), 
+                          Error=c(y.xgb.err, yhat.xgb.err),
+                          F1_Score=c(xgb.F1.tr, xgb.F1.te),
+                          Recall=c(xgb.recall.tr, xgb.recall.te),
+                          Precision=c(xgb.precision.tr,xgb.precision.te),
+                          Sensitivity=c(Sens.trx, Sens.tex),
+                          Specificity=c(Spec.trx, Spec.tex))
+flextable(xgb_summary)
+```
+
+
+```{r XGBoost fail option, eval=FALSE, message=FALSE, warning=FALSE, include=FALSE}
+library(cvms)
+library(caTools)
+library(xgboost)
+set.seed(46)
+clin.xge <- clin_tot1
+clin.xge <- clin.xge[,c(-1,-32)]
+sample_split <- sample.split(Y = clin.xge$AD_cat, SplitRatio = 0.7)
+tr_acu <- subset(x = clin.xge, sample_split == TRUE)
+te_acu <- subset(x = clin.xge, sample_split == FALSE)
+
+clin.xg <- clin_tot1 %>%
+  mutate_if(is.factor,as.integer)
+clin.xg <- clin.xg[,c(-1,-32)]
+
+# Splitting training and test data sample
+set.seed(46)
+sample_split <- sample.split(Y = clin.xg$AD_cat, SplitRatio = 0.7)
+tr_data <- subset(x = clin.xg, sample_split == TRUE)
+te_data <- subset(x = clin.xg, sample_split == FALSE)
+
+# Create numeric labels with one-hot encoding
+y_tr <- as.integer(tr_dat$AD_cat) - 1
+y_te <- as.integer(te_dat$AD_cat) - 1
+X_tr <- tr_dat %>% dplyr::select(-AD_cat)
+X_te <- te_dat %>% dplyr::select(-AD_cat)
+
+# Prepare matrices
+xgb_tr <- xgb.DMatrix(data = as.matrix(X_tr), label = y_tr)
+xgb_te <- xgb.DMatrix(data = as.matrix(X_te), label = y_te)
+
+# Set parameters
+xgb_params <- list(
+  booster = "gbtree", 
+  eta = 0.1,
+  max_depth = 8,
+  gamma = 1,
+  subsample= 0.70,
+  colsample_bytree = 1,
+  objective = "multi:softprob", 
+  num_class = length(levels(clin_tot1$AD_cat)), eval_metric = "mlogloss")
+
+set.seed(12)
+# XGBoost Model 
+xgb.tr.mod <- xgb.train(params = xgb_params, data=xgb_tr, nrounds = 1000, verbose=1)
+
+# Calculate # of folds for cross-validation (10 fold)
+xgbt.cv <- xgb.cv(params = xgb_params, data = xgb_tr, nrounds = 1000, nfold = 10, verbose=1, showsd = TRUE, stratified = TRUE, print_every_n = 200, early_stop_round = 20, maximize = FALSE, prediction = TRUE)
+print(xgbte.cv, verbose=T)
+
+# Importance matrix plot
+imp.mtx <- xgb.importance(feature_names = colnames(xgb_tr), model=xgb.tr.mod)
+xgb.plot.importance(imp.mtx)
+
+# Mutate xgb output to deliver hard predictions
+xgb.preds <- predict(xgb.tr.mod, as.matrix(X_tr), reshape=T)
+xgb.preds <- as.data.frame(xgb.preds)
+colnames(xgb.preds) <- levels(clin.xge$AD_cat)
+
+xgb.preds$PredictedClass <- apply(xgb.preds, 1, function(y) colnames(xgb.preds)[which.max(y)])
+xgb.preds$ActualClass <- levels(0.7*clin.xge$AD_cat)[y_te + 1]
+xgb.preds
+
+# Accuracy & classification error for training model
+xgbt.accu <- sum(xgb.preds$PredictedClass == xgb.preds$ActualClass) / nrow(xgb.preds)
+xgbt.accu
+cat("XGB Training Accuracy", xgbt.accu, "\n")
+tr.err <- 1-xgbt.accu
+cat("XGB Training Classification Error Rate:", tr.err, "\n")
+
+# Confusion matrix for training model
+xgb.conf.mat <- confusionMatrix(factor(xgb.preds$ActualClass), factor(xgb.preds$PredictedClass),
+                                  mode = "everything")
+xgb.conf.mat
+
+set.seed(12)
+# XGBoost Model for testing 
+xgb.te.mod <- xgb.train(params = xgb_params, data=xgb_te, nrounds = 1000, verbose=1)
+# Calculate # of folds for cross-validation (10 fold)
+xgbte.cv <- xgb.cv(params = xgb_params, data = xgb_te, nrounds = 1000, nfold = 10, verbose=1, showsd = TRUE, stratified = TRUE, print_every_n = 200, early_stop_round = 20, maximize = FALSE, prediction = TRUE)
+print(xgbte.cv, verbose=T)
+
+# Accuracy & classification error for training model
+xgbte.accu <- sum(xgb.te.preds$PredictedClass == xgb.te.preds$ActualClass) / nrow(xgb.te.preds)
+xgbte.accu
+cat("XGB Training Accuracy", xgbte.accu, "\n")
+te.err <- 1-xgbte.accu
+cat("XGB Training Classification Error Rate:", te.err, "\n")
+
+XGB_summary <- data.frame(Dataset=c("XGB Train", "XGB Test"), Accuracy=c(xgb.conf.mat$overall['Accuracy'], xgb.conf.mat2$overall['Accuracy']), 
+                          Error=c(tr.err, te.err),
+                          F1_Score=c(1, 1),
+                          Recall=c(1, 1),
+                          Precision=c(1, 1),
+                          Sensitivity=c(1,1),
+                          Specificity=c(1,1))
+kbl(XGB_summary)
+```
+
+
+SVM
+```{r SVM, message=FALSE, warning=FALSE}
+set.seed(12)
+ad_class <- svm(formula = AD_cat ~.,
+               data=ad_train,
+               type='C-classification',
+               kernel='linear', cost=100, gamma=1)
+y_pred.t = predict(ad_class, newdata = ad_train)
+y_pred = predict(ad_class, newdata = ad_test)
+y.svm.err <- mean(y_pred.t != ad_train[,"AD_cat"])
+yhat.svm.err <- mean(y_pred != ad_test[,"AD_cat"])
+confum <- confusionMatrix(y_pred.t, ad_train$AD_cat, mode = "everything")
+confumte <- confusionMatrix(y_pred, ad_test$AD_cat, mode="everything")
+
+svm.F1.tr <- F1_Score(y_pred.t, ad_train$AD_cat)
+svm.F1.te <- F1_Score(y_pred, ad_test$AD_cat)
+
+sv.recall.tr <- Recall(y_pred.t, ad_train$AD_cat)
+sv.recall.te <- Recall(y_pred, ad_test$AD_cat)
+
+precision.tr.s <- Precision(y_pred.t, ad_train$AD_cat)
+precision.te.s <- Precision(y_pred, ad_test$AD_cat)
+
+adtrtabs.s <- table(y_pred.t, ad_train$AD_cat)
+adtetabs.s <- table(y_pred, ad_test$AD_cat)
+
+Sens.trs <- sensitivity(adtrtabs.s, "1")
+Spec.trs <- specificity(adtrtabs.s, c("0","2"))
+
+Sens.tes <- sensitivity(adtetabs.s, "1")
+Spec.tes <- sensitivity(adtetabs.s, c("0","2"))
+confum
+confumte
+
+svm_summary <- data.frame(Dataset=c("SVM Train", "SVM Test"), 
+                         Accuracy=c(confum$overall['Accuracy'], confumte$overall['Accuracy']), 
+                          Error=c(y.svm.err, yhat.svm.err),
+                          F1_Score=c(svm.F1.tr, svm.F1.te),
+                          Recall=c(sv.recall.tr, sv.recall.te),
+                          Precision=c(precision.tr.s,precision.te.s),
+                          Sensitivity=c(Sens.trs, Sens.tes),
+                          Specificity=c(Spec.trs, Spec.tes))
+flextable(svm_summary)
+```
+
+Naïve Bayes Classifier
+```{r Gaussian NB, message=FALSE, warning=FALSE}
+set.seed(12)
+classifier_cl <- naiveBayes(AD_cat ~., data = ad_train)
+classifier_cl
+ 
+# Predicting on test data
+y_prednb.t <- predict(classifier_cl, newdata=ad_train)
+y_prednb <- predict(classifier_cl, newdata = ad_test)
+ 
+# Confusion Matrix
+cmnbt <- table(ad_train$AD_cat, y_prednb.t)
+cmnbte <- table(ad_test$AD_cat, y_prednb)
+cmtrnb <- confusionMatrix(cmnbt)
+cmtenb <- confusionMatrix(cmnbte)
+
+adtrtabs.nb <- table(y_prednb.t, ad_train$AD_cat)
+adtetabs.nb <- table(y_prednb, ad_test$AD_cat)
+
+# Reporting statistics
+y.nb.err <- mean(y_prednb.t != ad_train[,"AD_cat"])
+yhat.nb.err <- mean(y_prednb != ad_test[,"AD_cat"])
+
+nb.F1.tr <- F1_Score(y_prednb.t, ad_train$AD_cat)
+nb.F1.te <- F1_Score(y_prednb, ad_test$AD_cat)
+
+nb.recall.tr <- Recall(y_prednb.t, ad_train$AD_cat)
+nb.recall.te <- Recall(y_prednb, ad_test$AD_cat)
+
+nb.precision.tr <- Precision(y_prednb.t, ad_train$AD_cat)
+nb.precision.te <- Precision(y_prednb, ad_test$AD_cat)
+
+nb_summary <- data.frame(Dataset=c("GNB Train", "GNB Test"), 
+                         Accuracy=c(cmtrnb$overall['Accuracy'], cmtenb$overall['Accuracy']), 
+                          Error=c(y.nb.err, yhat.nb.err),
+                          F1_Score=c(nb.F1.tr, nb.F1.te),
+                          Recall=c(nb.recall.tr, nb.recall.te),
+                          Precision=c(nb.precision.tr,nb.precision.te))
+flextable(nb_summary)
+```
+
+Ridge regression with 10 fold cv
+```{r Ridge regression, message=FALSE, warning=FALSE}
+library(glmnet)
+rid_tr <- ad_train
+rid_tr[,-31] <- lapply(rid_tr[,-31], as.numeric) %>% as.matrix()
+rid_te <- ad_test
+rid_te[,-31] <- lapply(rid_te[,-31], as.numeric) %>% as.matrix()
+
+# Defining response variable & data matrix defining
+x_tr <- as.matrix(rid_tr[, -31])
+y_tr <- as.factor(rid_tr[, 31, drop = T])
+x_te <- as.matrix(rid_te[, -31])
+y_te <- as.factor(rid_te[, 31, drop = T])
+
+# Ridge model building
+set.seed(12)
+cv.fit.ridge <- cv.glmnet(x_tr, y_tr, family="multinomial", alpha=0,type="class", nfolds=10)
+coef(cv.fit.ridge, s="lambda.min")
+
+tr_pred <- predict(cv.fit.ridge, newx = x_tr, s="lambda.min",type="class")
+te_pred <- predict(cv.fit.ridge, newx = x_te, s="lambda.min",type="class")
+
+
+cfmr <- table(tr_pred, rid_tr$AD_cat)
+cfmrt <- table(te_pred, rid_te$AD_cat)
+rdcfm <- confusionMatrix(cfmr, mode="everything")
+rdcfmt <- confusionMatrix(cfmrt,mode="everything")
+
+rd.tr_error <- mean(tr_pred != rid_tr[,"AD_cat"])
+rd.te_error <- mean(te_pred != rid_te[,"AD_cat"])
+
+rd.F1.tr <- F1_Score(tr_pred, rid_tr$AD_cat)
+rd.F1.te <- F1_Score(te_pred, rid_te$AD_cat)
+
+rd.recall.tr <- Recall(tr_pred, rid_tr$AD_cat)
+rd.recall.te <- Recall(te_pred, rid_te$AD_cat)
+
+rd.precision.tr <- Precision(tr_pred, rid_tr$AD_cat)
+rd.precision.te <- Precision(te_pred, rid_te$AD_cat)
+
+rd.Sens.trr <- sensitivity(cfmr, "1")
+rd.Spec.trr <- specificity(cfmr, c("0","2"))
+
+rd.Sens.ter <- sensitivity(cfmrt, "1")
+rd.Spec.ter <- sensitivity(cfmrt, c("0","2"))
+
+rd_summary <- data.frame(Dataset=c("Rid Train", "Rid Test"), 
+                         Accuracy=c(rdcfm$overall['Accuracy'], rdcfmt$overall['Accuracy']), 
+                          Error=c(rd.tr_error, rd.te_error),
+                          F1_Score=c(rd.F1.tr, rd.F1.te),
+                          Recall=c(rd.recall.tr, rd.recall.te),
+                          Precision=c(rd.precision.tr,rd.precision.te),
+                          Sensitivity=c(rd.Sens.trr, rd.Sens.ter),
+                          Specificity=c(rd.Spec.trr, rd.Spec.ter))
+flextable(rd_summary)
+```
+
+Lasso with 10 fold cv
+```{r lasso, message=FALSE, warning=FALSE}
+set.seed(12)
+std_fit <- preProcess(x_tr, method = c("center", "scale"))
+x_tr_std <- predict(std_fit, x_tr)
+std_te.fit <- preProcess(x_te, method = c("center", "scale"))
+x_te_std <- predict(std_te.fit, x_te)
+
+cv.fit.lasso <- cv.glmnet(x_tr, y_tr, family="multinomial", alpha=1,type="class", nfolds=10)
+plot(cv.fit.lasso)
+coef(cv.fit.lasso, s="lambda.min")
+
+opt_lambda <- cv.fit.lasso$lambda.min
+opt_lambda
+
+tr_predl <- predict(cv.fit.lasso, newx = x_tr, s="lambda.min",type="class")
+te_predl <- predict(cv.fit.lasso, newx = x_te, s="lambda.min",type="class")
+lpred_labls <- factor(ifelse(tr_predl == 1, "AD", "Non_AD"))
+lpred.te_labls <- factor(ifelse(te_predl == 1, "AD", "Non_AD"))
+
+cfml <- table(tr_predl, rid_tr$AD_cat)
+cfmlt <- table(te_predl, rid_te$AD_cat)
+lscfm <- confusionMatrix(cfml, mode="everything")
+lscfmt <- confusionMatrix(cfmlt,mode="everything")
+
+tr_error <- mean(tr_predl != rid_tr[,"AD_cat"])
+te_error <- mean(te_predl != rid_te[,"AD_cat"])
+
+ls.F1.tr <- F1_Score(tr_predl, rid_tr$AD_cat)
+ls.F1.te <- F1_Score(te_predl, rid_te$AD_cat)
+
+ls.recall.tr <- Recall(tr_predl, rid_tr$AD_cat)
+ls.recall.te <- Recall(te_predl, rid_te$AD_cat)
+
+precision.trl <- Precision(tr_predl, rid_tr$AD_cat)
+precision.tel <- Precision(te_predl, rid_te$AD_cat)
+
+Sens.trl <- sensitivity(cfml, "1")
+Spec.trl <- specificity(cfml, c("0","2"))
+
+Sens.tel <- sensitivity(cfmlt, "1")
+Spec.tel <- sensitivity(cfmlt, c("0","2"))
+
+ls_summary <- data.frame(Dataset=c("LS Train", "LS Test"), 
+                         Accuracy=c(lscfm$overall['Accuracy'], lscfmt$overall['Accuracy']), 
+                          Error=c(tr_error, te_error),
+                          F1_Score=c(ls.F1.tr, ls.F1.te),
+                          Recall=c(ls.recall.tr, ls.recall.te),
+                          Precision=c(precision.trl,precision.tel),
+                          Sensitivity=c(Sens.trl, Sens.tel),
+                          Specificity=c(Spec.trl, Spec.tel))
+flextable(ls_summary)
+```
+
+Model Summary 
+```{r model summary, message=FALSE, warning=FALSE}
+#Train model summary
+Mod.summary <- rbind(RF_summary, DT_summary, xgb_summary, svm_summary, nb_summary, rd_summary, ls_summary)
+flextable(Mod.summary)
+
+Mod.TR.summary <- Mod.summary %>%
+  filter(Dataset %in% c("RF Train", "DT Train", "XGB Train","SVM Train","GNB Train","Rid Train","LS Train"))
+
+Mod.TE.summary <- Mod.summary %>%
+  filter(Dataset %in% c("RF Test", "DT Test", "XGB Test","SVM Test","GNB Test","Rid Test","LS Test"))
+
+flextable(Mod.TR.summary)
+flextable(Mod.TE.summary)
+```
+
+ROC & AUC
+```{r roc & auc, message=FALSE, warning=FALSE}
+rf.roc <- roc(ad_test$AD_cat, as.numeric(yhat.rf))
+rf.auc <- auc(rf.roc)
+dt.roc <- roc(ad_test$AD_cat, as.numeric(pred.tree.te))
+dt.auc <- auc(dt.roc)
+xgb.roc <- roc(factor(cm.pred$max_prob), as.numeric(factor(cm.pred$label)))
+xgb.auc <- auc(xgb.roc)
+svm.roc <- roc(ad_test$AD_cat, as.numeric(y_pred))
+svm.auc <- auc(svm.roc)
+Gnb.roc <- roc(ad_test$AD_cat, as.numeric(y_prednb))
+Gnb.auc <- auc(Gnb.roc)
+ridge.roc <- roc(ad_test$AD_cat, as.numeric(te_pred))
+ridge.auc <- auc(ridge.roc)
+lasso.roc <- roc(ad_test$AD_cat, as.numeric(lpred.te_labls))
+lasso.auc <- auc(lasso.roc)
+
+rocobjs <- list(RdmForest =rf.roc, DeciTree=dt.roc, XGBoost= xgb.roc, SVM = svm.roc, GauNB = Gnb.roc, Ridge=ridge.roc, Lasso=lasso.roc)
+methods_auc <- paste(c("RdmForest","DeciTree","XGBoost","SVM","GauNB","Ridge","Lasso"),
+"AUC = ", round(c(rf.auc, dt.auc, xgb.auc, svm.auc, Gnb.auc, ridge.auc, lasso.auc),4))
+ggroc(rocobjs, legacy.axes=TRUE, size = 1, alpha = 0.5) +
+scale_color_discrete(labels = methods_auc) +
+  labs(x="1-Specificity", y="Sensitivity", linetype="ML AUCs") + theme_classic()
+```
+
+
